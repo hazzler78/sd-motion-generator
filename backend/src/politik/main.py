@@ -13,9 +13,11 @@ from datetime import datetime
 import logging
 from dotenv import load_dotenv
 import os
+import time
 
 from politik.kolada_v2 import KoladaClient, KoladaError, NoDataError, ValidationError
 from politik.statistics import StatisticsType, format_statistic, format_trend, get_kpi_config, get_municipality_id
+from .bra_statistics import BRAStatistics
 
 # Konfigurera logging
 logging.basicConfig(level=logging.INFO)
@@ -85,10 +87,16 @@ class MotionRequest(BaseModel):
         }
     )
 
-def call_grok(prompt: str, role: str, max_retries: int = 3, timeout: int = 30) -> str:
+def call_grok(prompt: str, role: str, max_retries: int = 3, timeout: int = 60) -> str:
     """Anropa x.ai's Grok API med given prompt och roll."""
     for attempt in range(max_retries):
         try:
+            # Exponentiell backoff mellan försök
+            if attempt > 0:
+                wait_time = min(30, (2 ** attempt) * 5)  # Max 30 sekunder väntetid
+                logger.info(f"Väntar {wait_time} sekunder innan nästa försök...")
+                time.sleep(wait_time)
+            
             headers = {
                 "Authorization": f"Bearer {XAI_API_KEY}",
                 "Content-Type": "application/json"
@@ -129,14 +137,14 @@ def call_grok(prompt: str, role: str, max_retries: int = 3, timeout: int = 30) -
             return result["choices"][0]["message"]["content"]
 
         except requests.Timeout:
-            error_msg = "Grok API Error: Request timed out"
+            error_msg = f"Grok API Error: Request timed out (attempt {attempt + 1}/{max_retries})"
             logger.error(error_msg)
             if attempt == max_retries - 1:
                 raise HTTPException(status_code=504, detail=error_msg)
             continue
             
         except Exception as e:
-            error_msg = f"Grok API Error: {str(e)}"
+            error_msg = f"Grok API Error: {str(e)} (attempt {attempt + 1}/{max_retries})"
             logger.error(error_msg)
             if attempt == max_retries - 1:
                 raise HTTPException(status_code=500, detail=error_msg)
@@ -198,11 +206,28 @@ def agent_3_improve(draft: str, statistics: List[Dict[str, Any]]) -> str:
 
     # Skapa en strukturerad sammanfattning av statistiken
     stats_summary = "\n\nStatistiskt underlag och ekonomisk analys:\n"
+    crime_stats = None
+    
     for stat in statistics:
+        # Spara brottsstatistik separat för djupare analys
+        if "crimes_per_100k" in stat.get("data", {}):
+            crime_stats = stat["data"]
+            
         stats_summary += f"\n• {stat['text']}"
         if stat.get('trend'):
             stats_summary += f"\n  Trend: {stat['trend']}"
-            stats_summary += f"\n  Implikationer för förslaget: [Analysera hur trenden påverkar motionens genomförbarhet]"
+            
+    # Lägg till djupare analys av brottsstatistik om tillgänglig
+    if crime_stats:
+        stats_summary += "\n\nFördjupad brottsanalys:"
+        stats_summary += f"\n• Totalt antal anmälda brott: {crime_stats['total_crimes']:,}".replace(",", " ")
+        stats_summary += f"\n• Brott per 100 000 invånare: {crime_stats['crimes_per_100k']:.1f}"
+        stats_summary += f"\n• Förändring från föregående år: {crime_stats['change_from_previous_year']:.1f}%"
+        
+        if crime_stats.get("crimes_by_category"):
+            stats_summary += "\n\nBrottskategorier:"
+            for category, count in crime_stats["crimes_by_category"].items():
+                stats_summary += f"\n• {category}: {count:,}".replace(",", " ")
 
     # Skapa en förbättrad version med Grok
     role = (
@@ -217,30 +242,60 @@ def agent_3_improve(draft: str, statistics: List[Dict[str, Any]]) -> str:
         "   - Tidsmässigt avgränsad\n"
         "5. Behåll motionens grundstruktur men förstärk argumentationen\n"
         "6. Lägg till konkreta exempel på liknande framgångsrika projekt\n"
-        "7. Inkludera förslag på uppföljning och utvärdering"
+        "7. Inkludera förslag på uppföljning och utvärdering\n"
+        "8. Om brottsstatistik finns:\n"
+        "   - Analysera trender och mönster\n"
+        "   - Jämför med nationella genomsnitt\n"
+        "   - Föreslå evidensbaserade åtgärder\n"
+        "   - Inkludera kostnadseffektiva förebyggande insatser"
     )
     
     improved_motion = call_grok(f"Motion:\n{draft}\n\nStatistik och ekonomisk analys:{stats_summary}", role)
     return improved_motion
 
-def fetch_statistics(stat_type: StatisticsType, year: int, municipality: str = "karlstad") -> Dict[str, Any]:
+async def fetch_statistics(stat_type: StatisticsType, year: int, municipality: str) -> Dict[str, Any]:
     """
-    Hämta statistik från Kolada med felhantering och formattering
+    Hämta statistik från Kolada eller BRÅ.
     
     Args:
         stat_type: Typ av statistik att hämta
-        year: År att hämta data för
-        municipality: Kommunens namn (default: "karlstad")
-    
+        year: År att hämta statistik för
+        municipality: Kommun att hämta statistik för
+        
     Returns:
-        Dict[str, Any]: {
-            "text": str,  # Formaterad statistiktext
-            "trend": str, # Formaterad trendutveckling (om tillgänglig)
-            "data": Dict[str, Any]  # Rådata från Kolada
-        }
+        Dictionary containing formatted statistics and trend information
     """
     try:
-        # Hämta kommun-ID
+        # Hantera BRÅ-statistik separat
+        if stat_type == StatisticsType.BRA_STATISTIK:
+            async with BRAStatistics() as bra:
+                current_stats = await bra.get_crime_statistics(year)
+                prev_stats = await bra.get_crime_statistics(year - 1)
+            
+            # Formatera statistiken
+            config = get_kpi_config(stat_type)
+            result = {
+                "text": config.format_template.format(
+                    year=year,
+                    value=current_stats["total_crimes"],
+                    crimes_per_100k=current_stats["crimes_per_100k"]
+                ),
+                "data": current_stats
+            }
+            
+            # Lägg till trend om tillgänglig
+            if prev_stats:
+                result["trend"] = config.trend_template.format(
+                    previous_value=prev_stats["total_crimes"],
+                    previous_year=year - 1,
+                    current_value=current_stats["total_crimes"],
+                    current_year=year,
+                    change_from_previous_year=current_stats["change_from_previous_year"]
+                )
+                
+            return result
+            
+        # Hantera Kolada-statistik som tidigare
         municipality_id = get_municipality_id(municipality)
         if not municipality_id:
             raise ValueError(f"Okänd kommun: {municipality}")
@@ -275,7 +330,7 @@ def fetch_statistics(stat_type: StatisticsType, year: int, municipality: str = "
             pass
             
         return result
-        
+            
     except NoDataError as e:
         logger.warning(f"Ingen data tillgänglig för {stat_type.value} i {municipality}: {str(e)}")
         return {
@@ -320,7 +375,7 @@ async def generate_motion(request: MotionRequest):
         statistics = []
         if request.statistics:
             for stat_type in request.statistics:
-                stat_data = fetch_statistics(stat_type, request.year, request.municipality)
+                stat_data = await fetch_statistics(stat_type, request.year, request.municipality)
                 if stat_data["data"] is not None:
                     statistics.append(stat_data)
                     
@@ -378,4 +433,53 @@ async def health_check():
         return status
     except Exception as e:
         status["error"] = str(e)
-        return status 
+        return status
+
+@app.get("/api/crime-statistics/{year}")
+async def get_crime_statistics(year: int = 2024, crime_type: Optional[str] = None):
+    """
+    Get crime statistics from BRÅ for a specific year.
+    
+    Args:
+        year: The year to get statistics for (default: 2024)
+        crime_type: Optional specific crime type to filter by
+        
+    Returns:
+        Dictionary containing crime statistics
+    """
+    async with BRAStatistics() as bra:
+        return await bra.get_crime_statistics(year, crime_type)
+
+@app.get("/api/crime-trends/{start_year}/{end_year}")
+async def get_crime_trends(start_year: int, end_year: int, crime_type: Optional[str] = None) -> Dict:
+    """Get crime trends between specified years."""
+    current_year = datetime.now().year
+    
+    if end_year < start_year:
+        raise HTTPException(status_code=400, detail="End year cannot be before start year")
+        
+    if start_year > current_year or end_year > current_year:
+        raise HTTPException(status_code=400, detail="Cannot fetch statistics for future years")
+    
+    try:
+        async with BRAStatistics() as bra:
+            stats = []
+            for year in range(start_year, end_year + 1):
+                year_stats = await bra.get_crime_statistics(year, crime_type)
+                if year_stats:
+                    stats.append(year_stats)
+            
+            if not stats:
+                raise HTTPException(status_code=404, detail="No statistics found for the specified years")
+                
+            return {
+                "years": list(range(start_year, end_year + 1)),
+                "values": [s["total_crimes"] for s in stats],
+                "trend": "increasing" if stats[-1]["total_crimes"] > stats[0]["total_crimes"] * 1.05
+                        else "decreasing" if stats[-1]["total_crimes"] < stats[0]["total_crimes"] * 0.95
+                        else "stable"
+            }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 

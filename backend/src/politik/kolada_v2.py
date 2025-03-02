@@ -15,6 +15,7 @@ from enum import Enum
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import httpx
 
 # Konfigurera logging
 logging.basicConfig(level=logging.INFO)
@@ -152,12 +153,7 @@ class KoladaClient:
             validate: Om True, validera datan innan den returneras
             
         Returns:
-            Dict[str, Any]: {
-                "value": float,
-                "year": int,
-                "municipality": str,
-                "kpi": str
-            }
+            Dict[str, Any]: Dictionary med värdet och metadata
             
         Raises:
             NoDataError: Om ingen data finns för given kombination
@@ -251,40 +247,37 @@ class KoladaClient:
         max_fallback_years: int = 2
     ) -> Dict[str, Any]:
         """
-        Försök hämta data för ett år, med fallback till tidigare år
+        Försök hämta data för ett KPI med fallback till tidigare år
         
         Args:
             kpi_id: KPI-koden att hämta data för
             municipality_id: Kommun-ID
             target_year: Önskat år
-            max_fallback_years: Max antal år att gå bakåt
+            max_fallback_years: Max antal år att gå tillbaka
             
         Returns:
-            Dict[str, Any]: Data för närmaste tillgängliga år
+            Dict[str, Any]: Data för KPI:t med metadata
             
         Raises:
-            NoDataError: Om ingen data hittas inom tidsramen
+            NoDataError: Om ingen data hittas inom fallback-perioden
         """
         for year in range(target_year, target_year - max_fallback_years - 1, -1):
             try:
                 data = self.get_municipality_data(kpi_id, municipality_id, year)
-                if year != target_year:
-                    logger.info(
-                        f"Använder data från {year} istället för {target_year} "
-                        f"för KPI {kpi_id}"
-                    )
-                return data
-            except NoDataError:
+                if data["value"] is not None:
+                    return data
+            except (NoDataError, ValidationError) as e:
+                logger.error(f"Fel vid datahämtning: {str(e)}")
                 continue
                 
         raise NoDataError(
-            f"Ingen data tillgänglig för KPI {kpi_id} inom {max_fallback_years} år "
-            f"från {target_year}"
+            f"Ingen data tillgänglig för KPI {kpi_id}, "
+            f"kommun {municipality_id}, år {target_year}"
         )
         
     def get_available_years(self, kpi_id: str, municipality_id: str) -> List[int]:
         """
-        Hämta alla tillgängliga år för ett KPI och en kommun
+        Hämta tillgängliga år för ett KPI och en kommun.
         
         Args:
             kpi_id: KPI-koden att kontrollera
@@ -311,30 +304,31 @@ class KoladaClient:
                     
             return sorted(list(years), reverse=True)
             
-        except KoladaError as e:
+        except (KoladaError, httpx.HTTPError) as e:
             logger.error(f"Kunde inte hämta tillgängliga år: {str(e)}")
             return []
             
     def get_latest_available_year(self, kpi_id: str, municipality_id: str) -> Optional[int]:
         """
-        Hämta det senaste året med tillgänglig data
+        Hitta det senaste året med tillgänglig data för ett KPI
         
         Args:
-            kpi_id: KPI-koden att kontrollera
-            municipality_id: Kommun-ID att kontrollera
+            kpi_id: KPI-koden att söka efter
+            municipality_id: Kommun-ID
             
         Returns:
             Optional[int]: Senaste året med data, eller None om ingen data finns
         """
-        years = self.get_available_years(kpi_id, municipality_id)
-        
-        # Kontrollera varje år i fallande ordning tills vi hittar ett med data
-        for year in years:
-            try:
-                data = self.get_municipality_data(kpi_id, municipality_id, year)
-                if data and data.get("value") is not None:
-                    return year
-            except NoDataError:
-                continue
-                
-        return None 
+        try:
+            years = sorted(self.get_available_years(kpi_id, municipality_id), reverse=True)
+            for year in years:
+                try:
+                    data = self.get_municipality_data(kpi_id, municipality_id, year)
+                    if data and data["value"] is not None:
+                        return year
+                except (NoDataError, ValidationError):
+                    continue
+            return None
+        except KoladaError as e:
+            logger.error(f"Fel vid datahämtning: {str(e)}")
+            return None 

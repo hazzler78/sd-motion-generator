@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 class StatisticsType(Enum):
-    """Olika typer av statistik som kan hämtas från Kolada"""
+    """Olika typer av statistik som kan hämtas från Kolada och BRÅ"""
     BEFOLKNING = "befolkning"
     INVANDRING = "invandring"
     ARBETSMARKNAD = "arbetsmarknad"
@@ -23,6 +23,7 @@ class StatisticsType(Enum):
     SKOLRESULTAT = "skolresultat"
     ALDREOMSORG = "aldreomsorg"
     KULTUR = "kultur"
+    BRA_STATISTIK = "bra_statistik"
 
 # Mappning av kommunnamn till kommun-ID för Värmland
 VARMLAND_MUNICIPALITIES = {
@@ -176,7 +177,16 @@ KPI_MAPPING: Dict[StatisticsType, KPIConfig] = {
         trend_template="Utveckling kulturkostnad: {previous_value:,.0f} kr/inv ({previous_year}) → {current_value:,.0f} kr/inv ({current_year})",
         min_value=0,
         max_value=5000
-    )
+    ),
+    StatisticsType.BRA_STATISTIK: KPIConfig(
+        name="Brottsstatistik",
+        kpi_id="BRA_TOTAL",
+        format_type="number",
+        format_template="Under {year} anmäldes {value:,.0f} brott i Sverige, vilket motsvarar {crimes_per_100k:.1f} brott per 100 000 invånare",
+        trend_template="Utveckling av anmälda brott: {previous_value:,.0f} ({previous_year}) → {current_value:,.0f} ({current_year}), en förändring med {change_from_previous_year:.1f}%",
+        min_value=0,
+        max_value=2000000
+    ),
 }
 
 def get_kpi_config(stat_type: StatisticsType) -> Optional[KPIConfig]:

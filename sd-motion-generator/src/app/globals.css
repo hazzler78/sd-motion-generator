@@ -1,0 +1,138 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@theme {
+  --font-sans: var(--font-ibiza);
+  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  /* SD:s officiella färger */
+  --sd-primary: #004B87;    /* Mörkblå - huvudfärg */
+  --sd-secondary: #FDCC01;  /* Gul - accentfärg */
+  --sd-dark: #002E52;      /* Mörkare blå för hover/aktiv */
+  --sd-light: #E6F3FF;     /* Ljusblå för bakgrunder */
+  --white: #FFFFFF;
+  --background: #ffffff;
+  --foreground: #171717;
+  --text-primary: #333333;
+  --text-secondary: #666666;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #001F33;
+    --foreground: #FFFFFF;
+    --text-primary: #FFFFFF;
+    --text-secondary: #CCCCCC;
+  }
+}
+
+body {
+  background-color: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-ibiza);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-ibiza);
+  font-weight: 700;
+  color: var(--sd-primary);
+}
+
+/* Motion Container */
+.motion-container {
+  background-color: var(--white);
+  border: 1px solid var(--sd-primary);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  margin: 1rem 0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Motion Text Styles */
+.motion-text {
+  font-family: var(--font-ibiza) !important;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.motion-text strong,
+.motion-text b {
+  font-weight: 600;
+  font-family: var(--font-ibiza) !important;
+}
+
+.motion-text em,
+.motion-text i {
+  font-style: italic;
+  font-family: var(--font-ibiza) !important;
+}
+
+.motion-text p {
+  margin-bottom: 0.5rem;
+  font-family: var(--font-ibiza) !important;
+}
+
+.motion-text h1,
+.motion-text h2,
+.motion-text h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--sd-primary);
+  font-weight: 600;
+}
+
+.motion-text ul,
+.motion-text ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+  list-style-type: none;
+}
+
+.motion-text li {
+  margin-bottom: 0.75rem;
+  position: relative;
+}
+
+.motion-text li:before {
+  content: "•";
+  position: absolute;
+  left: -1rem;
+}
+
+/* Knappstilar */
+.button-primary {
+  @apply bg-sd-blue text-white font-ibiza font-semibold px-6 py-3 rounded-md 
+         hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+/* Form Styles */
+input[type="text"] {
+  @apply w-full p-3 rounded-md bg-white text-sd-blue placeholder-gray-400 
+         focus:outline-none focus:ring-2 focus:ring-sd-yellow;
+}
+
+/* Utility Classes */
+.accent {
+  color: var(--sd-secondary);
+}
+
+.bg-light {
+  background-color: var(--sd-light);
+}
+
+.bg-primary {
+  background-color: var(--sd-primary);
+  color: var(--white);
+}
+
+/* Font Weights */
+.font-extralight { font-weight: 200; }
+.font-light { font-weight: 300; }
+.font-regular { font-weight: 400; }
+.font-semibold { font-weight: 600; }
+.font-bold { font-weight: 700; }
+.font-extrabold { font-weight: 800; } 

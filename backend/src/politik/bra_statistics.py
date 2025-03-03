@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from fastapi import HTTPException
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -150,92 +151,91 @@ class BRAStatistics:
         return 0
     
     def _extract_percentage(self, text: str) -> float:
-        """Extract a percentage change from text."""
-        try:
-            if not text:
+        """Extract percentage change from text."""
+        if not text:
+            return 0.0
+
+        # Check if the value should be negative
+        negative_indicators = ['minska', 'minskning', 'minus', 'ned', 'ner', 'färre', 'lägre', 'mindre']
+        should_negate = any(indicator in text.lower() for indicator in negative_indicators)
+
+        # Direct percentage format (e.g. "7%")
+        match = re.search(r'(\d+(?:[,.]\d+)?(?:[,.]\d+)*|\d+e\d+)%', text)
+        if match:
+            number_str = match.group(1)
+            # Handle scientific notation
+            if 'e' in number_str.lower():
+                try:
+                    result = float(number_str)
+                    return -result if should_negate else result
+                except ValueError:
+                    return 0.0
+            # Handle multiple dots in direct format
+            if '.' in number_str:
+                parts = number_str.split('.')
+                try:
+                    # Take only the first two parts for a valid decimal number
+                    number = float(f"{parts[0]}.{parts[1]}")
+                    return -number if should_negate else number
+                except (ValueError, IndexError):
+                    return 0.0
+            try:
+                result = float(number_str.replace(',', '.'))
+                return -result if should_negate else result
+            except ValueError:
                 return 0.0
+
+        # Split text into words and find the number part
+        words = text.split()
+        valid_numbers = []
+        
+        for word in words:
+            # Skip words that don't contain digits
+            if not any(c.isdigit() for c in word):
+                continue
                 
-            # Find percentage number in text
-            import re
+            # Skip invalid number formats (e.g. "5..2")
+            if '..' in word:
+                continue
+                
+            # Handle special case with multiple commas (e.g. "2,5,6")
+            if word.count(',') > 1:
+                parts = word.split(',')
+                if len(parts) >= 2:
+                    try:
+                        # Validate that all parts are valid numbers
+                        all_parts_valid = True
+                        for part in parts:
+                            if not part.isdigit():
+                                all_parts_valid = False
+                                break
+                        if not all_parts_valid:
+                            continue
+                        # Take the last two parts for decimal number
+                        if len(parts) == 3:
+                            number = float(f"{parts[1]}.{parts[2]}")
+                        else:
+                            number = float(parts[-1])
+                        valid_numbers.append(number)
+                        continue
+                    except ValueError:
+                        continue
             
-            # Look for numbers followed by "procent" or "%"
-            matches = re.findall(r'(?:med|på)?\s*(\d+(?:[,.]\d+)?)\s*(?:procents?|%)', text.lower())
-            if matches:
-                # Handle complex number formats
-                number_str = matches[0].replace(",", ".")
-                parts = number_str.split(".")
-                
-                # Try to find the most reasonable number in the sequence
-                if len(parts) > 1:
-                    # If we have parts like ["2", "5", "6"], combine them appropriately
-                    if len(parts) >= 2 and all(p.isdigit() for p in parts[1:]):
-                        try:
-                            # Try to combine the decimal parts (e.g., "5" and "6" become "56")
-                            decimal_part = "".join(parts[1:])
-                            value = float(f"{parts[0]}.{decimal_part}")
-                            if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                                value = -value
-                            return value
-                        except ValueError:
-                            pass
-                    
-                    # If that fails, take the first valid number
-                    for part in parts:
-                        if part.strip().isdigit():
-                            value = float(part)
-                            if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                                value = -value
-                            return value
-                else:
-                    # Simple case - just one number
-                    try:
-                        value = float(number_str)
-                        if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                            value = -value
-                        return value
-                    except ValueError:
-                        pass
-                    
-            # Try alternative format: "en minskning med X procent"
-            matches = re.findall(r'(?:en |med |på )?(\d+(?:[,.]\d+)?)\s*(?:procents?|%)', text.lower())
-            if matches:
-                # Handle complex number formats
-                number_str = matches[0].replace(",", ".")
-                parts = number_str.split(".")
-                
-                # Try to find the most reasonable number in the sequence
-                if len(parts) > 1:
-                    # If we have parts like ["2", "5", "6"], combine them appropriately
-                    if len(parts) >= 2 and all(p.isdigit() for p in parts[1:]):
-                        try:
-                            decimal_part = "".join(parts[1:])
-                            value = float(f"{parts[0]}.{decimal_part}")
-                            if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                                value = -value
-                            return value
-                        except ValueError:
-                            pass
-                    
-                    # If that fails, take the first valid number
-                    for part in parts:
-                        if part.strip().isdigit():
-                            value = float(part)
-                            if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                                value = -value
-                            return value
-                else:
-                    # Simple case - just one number
-                    try:
-                        value = float(number_str)
-                        if any(word in text.lower() for word in ["minska", "minskning", "mindre", "lägre", "ned", "ner"]):
-                            value = -value
-                        return value
-                    except ValueError:
-                        pass
-                    
-        except Exception as e:
-            logger.error(f"Error extracting percentage: {str(e)} from text: {text}")
-        return 0.0
+            # Extract all valid numbers from the word
+            number_matches = re.findall(r'\d+(?:[,.]\d+)?', word)
+            for number_str in number_matches:
+                try:
+                    number = float(number_str.replace(',', '.'))
+                    valid_numbers.append(number)
+                except ValueError:
+                    continue
+
+        if not valid_numbers:
+            return 0.0
+
+        # Take the last valid number found
+        result = valid_numbers[-1]
+        return -result if should_negate else result
         
     def get_crime_trends(self, start_year: int, end_year: int = 2024,
                         crime_type: Optional[str] = None) -> Dict[str, List]:

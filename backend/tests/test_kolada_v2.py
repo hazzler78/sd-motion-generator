@@ -15,9 +15,10 @@ from politik.kolada_v2 import (
 def kolada_client():
     return KoladaClient()
 
-def get_mock_kpi_metadata():
-    return {
-        "values": [{
+def get_mock_kpi_metadata(kpi_id: str = "N01900"):
+    """Get mock metadata for a specific KPI"""
+    kpi_data = {
+        "N01900": {
             "id": "N01900",
             "title": "Befolkning",
             "description": "Antal invånare totalt",
@@ -26,8 +27,29 @@ def get_mock_kpi_metadata():
             "is_numbered": True,
             "operating_area": "Befolkning",
             "perspective": "Demografi"
-        }]
+        },
+        "N07403": {
+            "id": "N07403",
+            "title": "Våldsbrott",
+            "description": "Antal anmälda våldsbrott per 100k invånare",
+            "municipality_type": True,
+            "has_municipality_data": True,
+            "is_numbered": True,
+            "operating_area": "Trygghet",
+            "perspective": "Säkerhet"
+        },
+        "N03101": {
+            "id": "N03101",
+            "title": "Ekonomiskt resultat",
+            "description": "Kommunens ekonomiska resultat i miljoner kronor",
+            "municipality_type": True,
+            "has_municipality_data": True,
+            "is_numbered": True,
+            "operating_area": "Ekonomi",
+            "perspective": "Resultat"
+        }
     }
+    return {"values": [kpi_data.get(kpi_id, kpi_data["N01900"])]}
 
 def get_mock_municipality_data(value: float, year: int = 2024):
     return {
@@ -235,7 +257,7 @@ def test_validation_error_violent_crimes(kolada_client, requests_mock):
 
     requests_mock.get(
         f"{KoladaClient.BASE_URL}/kpi/{kpi_id}",
-        json=get_mock_kpi_metadata()
+        json=get_mock_kpi_metadata(kpi_id)
     )
     requests_mock.get(
         f"{KoladaClient.BASE_URL}/data/v1/kpi",
@@ -255,7 +277,7 @@ def test_validation_error_economic_result(kolada_client, requests_mock):
 
     requests_mock.get(
         f"{KoladaClient.BASE_URL}/kpi/{kpi_id}",
-        json=get_mock_kpi_metadata()
+        json=get_mock_kpi_metadata(kpi_id)
     )
     requests_mock.get(
         f"{KoladaClient.BASE_URL}/data/v1/kpi",
@@ -365,44 +387,107 @@ async def test_value_validation(requests_mock):
 
 @pytest.mark.asyncio
 async def test_latest_available_year(requests_mock):
-    """Testa hämtning av senaste tillgängliga år"""
+    # Arrange
     client = KoladaClient()
     
     # Mock metadata request
     requests_mock.get(
         f"{KoladaClient.BASE_URL}/kpi/test",
-        json=get_mock_kpi_metadata()
+        json=get_mock_kpi_metadata("test")
     )
     
-    # Mock initial request for available years
+    # Mock data request
     requests_mock.get(
-        f"{KoladaClient.BASE_URL}/data/v1/kpi?municipality=1715&kpi=test",
+        f"{KoladaClient.BASE_URL}/data/v1/kpi",
         json={
             "values": [
-                {"period": "2023"},
-                {"period": "2022"}
+                {
+                    "period": "2023",
+                    "values": [{
+                        "value": 43.5,
+                        "gender": "T"
+                    }]
+                },
+                {
+                    "period": "2022",
+                    "values": [{
+                        "value": 42.5,
+                        "gender": "T"
+                    }]
+                }
             ]
-        }
-    )
-    
-    # Mock data requests for specific years
-    requests_mock.get(
-        f"{KoladaClient.BASE_URL}/data/v1/kpi?municipality=1715&kpi=test&year=2023",
-        json={"values": []}
-    )
-    requests_mock.get(
-        f"{KoladaClient.BASE_URL}/data/v1/kpi?municipality=1715&kpi=test&year=2022",
-        json={
-            "values": [{
-                "period": "2022",
-                "values": [{
-                    "value": 42.5,
-                    "gender": "T"
-                }]
-            }]
         }
     )
     
     # Test getting latest year
     latest = client.get_latest_available_year("test", "1715")
-    assert latest == 2022 
+    assert latest == 2023 
+
+def test_latest_data_handling(requests_mock):
+    """Test att systemet kan hantera och hitta senaste tillgängliga data."""
+    client = KoladaClient()
+    kpi_id = "N01900"
+    municipality_id = "1715"
+    
+    # Simulera att bara 2023 data finns tillgänglig först
+    requests_mock.get(
+        f"{KoladaClient.BASE_URL}/kpi/{kpi_id}",
+        json=get_mock_kpi_metadata(kpi_id)
+    )
+    
+    # Mock för get_available_years och get_municipality_data
+    requests_mock.get(
+        f"{KoladaClient.BASE_URL}/data/v1/kpi",
+        [
+            # Första anropet - bara 2023 data
+            {
+                'json': {
+                    "values": [
+                        {
+                            "period": "2023",
+                            "values": [{"value": "95000", "gender": "T"}]
+                        }
+                    ]
+                }
+            },
+            # Andra anropet - 2023 och 2024 data
+            {
+                'json': {
+                    "values": [
+                        {
+                            "period": "2024",
+                            "values": [{"value": "96000", "gender": "T"}]
+                        },
+                        {
+                            "period": "2023",
+                            "values": [{"value": "95000", "gender": "T"}]
+                        }
+                    ]
+                }
+            },
+            # Tredje anropet - för get_municipality_data
+            {
+                'json': {
+                    "values": [
+                        {
+                            "period": "2024",
+                            "values": [{"value": "96000", "gender": "T"}]
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+    
+    # Verifiera att systemet hittar 2023 data
+    latest_year = client.get_latest_available_year(kpi_id, municipality_id)
+    assert latest_year == 2023
+    
+    # Verifiera att systemet hittar den nya 2024 datan
+    latest_year = client.get_latest_available_year(kpi_id, municipality_id)
+    assert latest_year == 2024
+    
+    # Verifiera att get_municipality_data_with_fallback använder senaste tillgängliga data
+    data = client.get_municipality_data_with_fallback(kpi_id, municipality_id, 2025)
+    assert data["year"] == 2024
+    assert data["value"] == 96000 

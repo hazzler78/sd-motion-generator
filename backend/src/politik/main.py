@@ -55,7 +55,7 @@ def get_current_year() -> int:
 
 class MotionRequest(BaseModel):
     """Request-modell för att generera en motion."""
-    topic: str = Field(..., min_length=1)
+    topic: str = Field(..., min_length=1, description="Topic cannot be empty")
     statistics: Optional[List[StatisticsType]] = []
     year: Optional[int] = Field(default=None)
     municipality: Optional[str] = Field(default="karlstad")
@@ -66,9 +66,10 @@ class MotionRequest(BaseModel):
 
     @field_validator('topic')
     def topic_not_empty(cls, v):
-        if not v.strip():
+        v = v.strip()
+        if not v:
             raise ValueError('Topic cannot be empty or just whitespace')
-        return v.strip()
+        return v
 
     @field_validator('municipality')
     def validate_municipality(cls, v):
@@ -156,13 +157,23 @@ def agent_1_suggestion(topic: str) -> str:
     """Generera initial förslag med Grok."""
     role = (
         "Du är en erfaren politisk strateg för Sverigedemokraterna med djup förståelse för kommunal politik. "
-        "Din uppgift är att föreslå EN genomförbar motion som:\n"
+        "Din uppgift är att föreslå EN genomförbar motion om det specifika ämne som anges - inga alternativa ämnen.\n\n"
+        "Utgå från Sverigedemokraternas grundläggande värderingar:\n"
+        "- Socialkonservativ syn på samhället\n"
+        "- Stark välfärd för svenska medborgare\n"
+        "- Traditionella värderingar och kulturarv\n"
+        "- Restriktiv invandringspolitik\n"
+        "- Lag och ordning\n"
+        "- Ansvarsfull ekonomisk politik\n\n"
+        "Motionen ska:\n"
         "1. Ligger inom kommunens juridiska befogenheter\n"
         "2. Har en realistisk ekonomisk kalkyl\n"
         "3. Kan implementeras inom en rimlig tidsram\n"
         "4. Har stöd i tillgänglig statistik\n"
-        "5. Bidrar till kommunens långsiktiga mål\n\n"
-        "OBS: Generera endast EN sammanhållen motion, inte flera separata motioner.\n\n"
+        "5. Bidrar till kommunens långsiktiga mål\n"
+        "6. Främjar svenska värderingar och traditioner\n"
+        "7. Prioriterar kommuninvånarnas trygghet och välfärd\n\n"
+        "OBS: Generera endast EN sammanhållen motion om det angivna ämnet, inte flera separata motioner.\n\n"
         "Du har tillgång till följande statistiktyper från Kolada som ska användas för att stödja förslaget:\n"
         "- Befolkning (N01900): Demografisk utveckling\n"
         "- Trygghet (N07403): Antal anmälda våldsbrott\n"
@@ -173,14 +184,20 @@ def agent_1_suggestion(topic: str) -> str:
         "- Skattesats (N00901): Kommunal skattesats\n\n"
         "Föreslå 2-3 relevanta statistiktyper som stärker argumentationen."
     )
-    return call_grok(topic, role)
+    prompt = f"Skriv en motion om: {topic}"
+    return call_grok(prompt, role)
 
-def agent_2_draft(suggestion: str) -> str:
+def agent_2_draft(suggestion: str, topic: str) -> str:
     """Skapa motion-utkast med Grok."""
     role = (
-        "Du är en expert på framgångsrika kommunala motioner. Din uppgift är att skapa "
-        "EN övertygande motion som har hög sannolikhet att bli bifallen. "
-        "OBS: Skapa endast EN sammanhållen motion, inte flera separata motioner.\n"
+        "Du är en expert på framgångsrika kommunala motioner för Sverigedemokraterna. Din uppgift är att skapa "
+        "EN övertygande motion om EXAKT följande ämne, utan att byta ämne: {topic}. Motionen ska:\n"
+        "1. Värna om kommunens kärnverksamhet och skattemedel\n"
+        "2. Främja sammanhållning och gemenskap\n"
+        "3. Stärka trygghet och säkerhet\n"
+        "4. Vara ekonomiskt ansvarsfull\n"
+        "5. Ha tydlig demokratisk förankring\n\n"
+        "OBS: Skapa endast EN sammanhållen motion om det angivna ämnet, inte flera separata motioner.\n"
         "\nFokusera på:"
         "\n1. Tydlig koppling till kommunens ansvar och befogenheter"
         "\n2. Konkret ekonomisk genomförbarhet med kostnadsuppskattningar"
@@ -189,15 +206,16 @@ def agent_2_draft(suggestion: str) -> str:
         "\n5. Tydliga, mätbara mål"
         "\n\nMotionen ska innehålla:"
         "\n- En koncis bakgrundsbeskrivning med relevant statistik"
-        "\n- Tydlig problemformulering"
+        "\n- Tydlig problemformulering som visar på behovet av åtgärder"
         "\n- Konkreta att-satser med:"
-        "\n  * Specificerade åtgärder"
-        "\n  * Uppskattad kostnad"
-        "\n  * Förslag på finansiering"
+        "\n  * Specificerade åtgärder som stärker kommunens kärnverksamhet"
+        "\n  * Uppskattad kostnad och effektiv resursanvändning"
+        "\n  * Förslag på ansvarsfull finansiering"
         "\n  * Tidsplan för genomförande"
-        "\n\nAnvänd formellt språk och var konkret. Sammanfatta alla åtgärder i EN sammanhållen motion."
+        "\n\nAnvänd ett formellt men tillgängligt språk och var konkret. Sammanfatta alla åtgärder i EN sammanhållen motion."
     )
-    return call_grok(suggestion, role)
+    prompt = f"Skriv en motion om '{topic}' baserat på följande förslag:\n\n{suggestion}"
+    return call_grok(prompt, role.format(topic=topic))
 
 def agent_3_improve(draft: str, statistics: List[Dict[str, Any]]) -> str:
     """Förbättra motionen med statistik och ekonomisk realism."""
@@ -231,122 +249,154 @@ def agent_3_improve(draft: str, statistics: List[Dict[str, Any]]) -> str:
 
     # Skapa en förbättrad version med Grok
     role = (
-        "Du är en expert på att förbättra kommunala motioner för maximal genomslagskraft. "
-        "Din uppgift är att:\n"
-        "1. Integrera statistiken naturligt i argumentationen\n"
-        "2. Stärka den ekonomiska genomförbarheten\n"
-        "3. Tydliggöra kopplingen till kommunens mål\n"
-        "4. Säkerställa att varje att-sats är:\n"
+        "Du är en expert på att förbättra kommunala motioner för Sverigedemokraterna med fokus på maximal genomslagskraft. "
+        "Din uppgift är att förstärka motionen enligt partiets värdegrund:\n"
+        "1. Integrera statistiken för att visa på faktabaserad argumentation\n"
+        "2. Stärka den ekonomiska ansvarstagandet och effektiv resursanvändning\n"
+        "3. Tydliggöra hur förslaget stärker kommunens kärnverksamhet\n"
+        "4. Visa hur åtgärderna främjar:\n"
+        "   - Trygghet och säkerhet\n"
+        "   - Sammanhållning och gemenskap\n"
+        "   - Ansvarsfull förvaltning av skattemedel\n"
+        "   - Demokratiska värderingar\n"
+        "5. Säkerställa att varje att-sats är:\n"
         "   - Konkret och mätbar\n"
         "   - Ekonomiskt realistisk\n"
         "   - Tidsmässigt avgränsad\n"
-        "5. Behåll motionens grundstruktur men förstärk argumentationen\n"
-        "6. Lägg till konkreta exempel på liknande framgångsrika projekt\n"
-        "7. Inkludera förslag på uppföljning och utvärdering\n"
+        "6. Lägg till konkreta exempel på framgångsrika liknande projekt\n"
+        "7. Inkludera tydlig plan för uppföljning och utvärdering\n"
         "8. Om brottsstatistik finns:\n"
-        "   - Analysera trender och mönster\n"
+        "   - Analysera trender och påverkan på trygghet\n"
         "   - Jämför med nationella genomsnitt\n"
         "   - Föreslå evidensbaserade åtgärder\n"
-        "   - Inkludera kostnadseffektiva förebyggande insatser"
+        "   - Prioritera förebyggande insatser"
     )
     
     improved_motion = call_grok(f"Motion:\n{draft}\n\nStatistik och ekonomisk analys:{stats_summary}", role)
     return improved_motion
 
 async def fetch_statistics(stat_type: StatisticsType, year: int, municipality: str) -> Dict[str, Any]:
-    """
-    Hämta statistik från Kolada eller BRÅ.
-    
-    Args:
-        stat_type: Typ av statistik att hämta
-        year: År att hämta statistik för
-        municipality: Kommun att hämta statistik för
-        
-    Returns:
-        Dictionary containing formatted statistics and trend information
-    """
+    """Hämta statistik för en given kommun och år."""
     try:
-        # Hantera BRÅ-statistik separat
-        if stat_type == StatisticsType.BRA_STATISTIK:
-            async with BRAStatistics() as bra:
-                current_stats = await bra.get_crime_statistics(year)
-                prev_stats = await bra.get_crime_statistics(year - 1)
-            
-            # Formatera statistiken
-            config = get_kpi_config(stat_type)
-            result = {
-                "text": config.format_template.format(
-                    year=year,
-                    value=current_stats["total_crimes"],
-                    crimes_per_100k=current_stats["crimes_per_100k"]
-                ),
-                "data": current_stats
-            }
-            
-            # Lägg till trend om tillgänglig
-            if prev_stats:
-                result["trend"] = config.trend_template.format(
-                    previous_value=prev_stats["total_crimes"],
-                    previous_year=year - 1,
-                    current_value=current_stats["total_crimes"],
-                    current_year=year,
-                    change_from_previous_year=current_stats["change_from_previous_year"]
-                )
-                
-            return result
-            
-        # Hantera Kolada-statistik som tidigare
         municipality_id = get_municipality_id(municipality)
         if not municipality_id:
-            raise ValueError(f"Okänd kommun: {municipality}")
+            return {
+                "text": f"Ett fel uppstod vid hämtning av statistik för {stat_type.value} i {municipality}",
+                "data": None
+            }
 
-        # Hämta aktuell data
-        current_data = kolada_client.get_municipality_data(
-            kpi_id=get_kpi_config(stat_type).kpi_id,
-            municipality_id=municipality_id,
-            year=year
-        )
+        if stat_type == StatisticsType.BRA_STATISTIK:
+            crime_categories = ["skadegörelse", "våldsbrott", "narkotikabrott"]
+            stats_data = {}
+            trend_data = {}
+            
+            async with BRAStatistics() as bra:
+                # Hämta statistik för varje brottskategori
+                for category in crime_categories:
+                    try:
+                        current_stats = await bra.get_crime_statistics(year, category)
+                        if current_stats:
+                            stats_data[category] = current_stats
+                            try:
+                                prev_stats = await bra.get_crime_statistics(year - 1, category)
+                                trend_stats = await bra.get_crime_trends(year - 3, year, category)
+                                
+                                if prev_stats and trend_stats:
+                                    trend_data[category] = {
+                                        "change": current_stats.get('change_from_previous_year', 0),
+                                        "trend": trend_stats.get('trend', 'stable'),
+                                        "values": trend_stats.get('values', [])
+                                    }
+                            except Exception as e:
+                                logger.warning(f"Kunde inte hämta trend för {category}: {str(e)}")
+                                # Fortsätt även om vi inte kan hämta trend
+                                pass
+                    except Exception as e:
+                        logger.error(f"Fel vid hämtning av statistik för {category}: {str(e)}")
+                        continue
+            
+            # Om vi har någon statistik, skapa text och returnera
+            if stats_data:
+                # Skapa beskrivande text
+                text_parts = []
+                for category in crime_categories:
+                    if stats_data.get(category):
+                        stats = stats_data[category]
+                        trend = trend_data.get(category, {})
+                        
+                        text = f"{municipality.title()} rapporterade {stats.get('crimes_per_100k', 0):.1f} {category} per 100 000 invånare ({year})"
+                        
+                        if trend.get('change', 0) != 0:
+                            text += f", en {trend['change']:.1f}% förändring från föregående år"
+                        
+                        if trend.get('trend') and trend.get('trend') != 'stable':
+                            text += f". Trenden är {trend['trend']} sedan {year-3}"
+                        
+                        text_parts.append(text)
+                
+                return {
+                    "text": "\n".join(text_parts),
+                    "data": stats_data,
+                    "trends": trend_data
+                }
+            else:
+                return {
+                    "text": f"Statistik för {stat_type.value} är ej tillgänglig",
+                    "data": None
+                }
         
-        # Lägg till kommunnamn för formattering
-        current_data["municipality"] = municipality.title()
-        
-        result = {
-            "text": format_statistic(stat_type, current_data),
-            "data": current_data
-        }
-        
-        # Försök hämta data för föregående år för trend
+        # Kolada-logik
         try:
-            prev_data = kolada_client.get_municipality_data(
+            current_data = kolada_client.get_municipality_data(
                 kpi_id=get_kpi_config(stat_type).kpi_id,
                 municipality_id=municipality_id,
-                year=year - 1
+                year=year
             )
-            # Lägg till kommunnamn för formattering
-            prev_data["municipality"] = municipality.title()
-            result["trend"] = format_trend(stat_type, current_data, prev_data)
-        except (KoladaError, KeyError):
-            # Om vi inte kan hämta trend, skippa den
-            pass
+            current_data["municipality"] = municipality.title()
+            result = {"text": format_statistic(stat_type, current_data), "data": current_data}
             
-        return result
+            try:
+                prev_data = kolada_client.get_municipality_data(
+                    kpi_id=get_kpi_config(stat_type).kpi_id,
+                    municipality_id=municipality_id,
+                    year=year - 1
+                )
+                prev_data["municipality"] = municipality.title()
+                result["trend"] = format_trend(stat_type, current_data, prev_data)
+            except Exception as e:
+                logger.warning(f"Kunde inte hämta trend för {stat_type.value}: {str(e)}")
+                # Fortsätt även om vi inte kan hämta trend
             
-    except NoDataError as e:
-        logger.warning(f"Ingen data tillgänglig för {stat_type.value} i {municipality}: {str(e)}")
-        return {
-            "text": f"Statistik för {stat_type.value} är inte tillgänglig för {municipality} år {year}",
-            "data": None
-        }
+            return result
+            
+        except NoDataError:
+            return {
+                "text": f"Statistik för {stat_type.value} är inte tillgänglig",
+                "data": None
+            }
+        except ValidationError as e:
+            logger.error(f"Fel vid validering av {stat_type.value}: {str(e)}")
+            return {
+                "text": f"Statistik för {stat_type.value} kunde inte valideras: {str(e)}",
+                "data": None
+            }
+        except Exception as e:
+            logger.error(f"Fel vid hämtning av {stat_type.value}: {str(e)}")
+            return {
+                "text": f"Ett fel uppstod vid hämtning av statistik för {stat_type.value}",
+                "data": None
+            }
+    
     except ValidationError as e:
-        logger.error(f"Ogiltig data för {stat_type.value} i {municipality}: {str(e)}")
+        logger.error(f"Fel vid validering av {stat_type.value}: {str(e)}")
         return {
-            "text": f"Statistik för {stat_type.value} i {municipality} kunde inte valideras",
+            "text": f"Statistik för {stat_type.value} kunde inte valideras: {str(e)}",
             "data": None
         }
     except Exception as e:
-        logger.error(f"Fel vid hämtning av {stat_type.value} för {municipality}: {str(e)}")
+        logger.error(f"Fel vid hämtning av {stat_type.value}: {str(e)}")
         return {
-            "text": f"Ett fel uppstod vid hämtning av statistik för {stat_type.value} i {municipality}",
+            "text": f"Ett fel uppstod vid hämtning av statistik för {stat_type.value}",
             "data": None
         }
 
@@ -369,7 +419,7 @@ async def generate_motion(request: MotionRequest):
         suggestion = agent_1_suggestion(request.topic)
         
         # Steg 2: Skapa motion-utkast med Grok
-        draft = agent_2_draft(suggestion)
+        draft = agent_2_draft(suggestion, request.topic)
         
         # Steg 3: Hämta och lägg till statistik
         statistics = []

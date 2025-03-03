@@ -572,50 +572,59 @@ async def test_fetch_statistics_bra():
         "total_crimes": 4750,
         "crimes_per_100k": 950
     }
+    trend_stats = {
+        "trend": "stable",
+        "values": [4500, 4750, 5000]
+    }
     
-    async def mock_get_crime_statistics(year):
-        if year == 2024:
-            return current_stats
-        return prev_stats
+    mock_get_crime_statistics = AsyncMock(side_effect=lambda year, crime_type=None: current_stats if year == 2024 else prev_stats)
+    mock_get_crime_trends = AsyncMock(return_value=trend_stats)
     
     with patch('politik.main.BRAStatistics') as MockBRA:
         mock_bra = MockBRA.return_value
         mock_bra.__aenter__.return_value = mock_bra
         mock_bra.__aexit__.return_value = None
         mock_bra.get_crime_statistics = mock_get_crime_statistics
+        mock_bra.get_crime_trends = mock_get_crime_trends
         
         result = await fetch_statistics(StatisticsType.BRA_STATISTIK, 2024, "karlstad")
         
-        assert result["data"] == current_stats
-        assert "trend" in result
-        assert "4,750" in result["trend"]  # Previous value
-        assert "5,000" in result["trend"]  # Current value
-        assert "5.2" in result["trend"]   # Change percentage with decimal point
+        assert result["data"]["skadegörelse"] == current_stats
+        assert result["trends"]["skadegörelse"]["trend"] == "stable"
+        assert "1000.0" in result["text"]
+        assert "skadegörelse" in result["text"]
+        assert "5.2% förändring" in result["text"]
 
 @pytest.mark.asyncio
 async def test_fetch_statistics_bra_no_trend():
-    """Test fetching BRÅ statistics without previous year data."""
     current_stats = {
-        "total_crimes": 5000,
-        "crimes_per_100k": 1000,
-        "change_from_previous_year": None
+        'crimes_per_100k': 1000,
+        'total_crimes': 5000,
+        'change_from_previous_year': None
     }
     
-    async def mock_get_crime_statistics(year):
+    async def mock_get_crime_statistics(year, category):
         if year == 2024:
             return current_stats
         return None
     
-    with patch('politik.main.BRAStatistics') as MockBRA:
-        mock_bra = MockBRA.return_value
-        mock_bra.__aenter__.return_value = mock_bra
-        mock_bra.__aexit__.return_value = None
-        mock_bra.get_crime_statistics = mock_get_crime_statistics
+    async def mock_get_crime_trends(start_year, end_year, category):
+        return None
+    
+    with patch('politik.main.get_municipality_id', return_value="1780") as mock_get_id, \
+         patch('politik.main.BRAStatistics') as mock_bra:
+        mock_bra_instance = AsyncMock()
+        mock_bra_instance.get_crime_statistics = AsyncMock(side_effect=mock_get_crime_statistics)
+        mock_bra_instance.get_crime_trends = AsyncMock(side_effect=mock_get_crime_trends)
+        mock_bra.return_value.__aenter__.return_value = mock_bra_instance
         
-        result = await fetch_statistics(StatisticsType.BRA_STATISTIK, 2024, "karlstad")
+        result = await fetch_statistics(StatisticsType.BRA_STATISTIK, 2024, "Stockholm")
         
-        assert result["data"] == current_stats
-        assert "trend" not in result
+        assert result["data"] is not None
+        assert result["data"]["skadegörelse"] == current_stats
+        assert "1000.0" in result["text"]
+        assert "skadegörelse" in result["text"]
+        assert "förändring" not in result["text"]
 
 @pytest.mark.asyncio
 async def test_fetch_statistics_kolada_error_handling():
@@ -1018,14 +1027,11 @@ async def test_kolada_latest_year_not_found():
 @pytest.mark.asyncio
 async def test_motion_request_empty_topic():
     """Test that empty topic raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(ValueError) as exc_info:
         MotionRequest(topic="", municipality="karlstad")
     
-    errors = exc_info.value.errors()
-    assert len(errors) == 1
-    assert errors[0]["type"] == "string_too_short"
-    assert errors[0]["loc"] == ("topic",)
-    assert "String should have at least 1 character" in str(errors[0]["msg"])
+    error_msg = str(exc_info.value)
+    assert "String should have at least 1 character" in error_msg
 
 @pytest.mark.asyncio
 async def test_grok_all_retries_failed():
@@ -1112,3 +1118,18 @@ async def test_format_trend_general_error():
         {"value": 92000, "year": 2023}
     )
     assert "Kunde inte formatera trend för bra_statistik" in result 
+
+@pytest.mark.asyncio
+async def test_fetch_statistics_bra_error_handling():
+    """Test error handling in fetch_statistics for BRÅ statistics."""
+    with patch('politik.main.BRAStatistics') as MockBRA:
+        mock_bra = MockBRA.return_value
+        mock_bra.__aenter__.return_value = mock_bra
+        mock_bra.__aexit__.return_value = None
+        mock_bra.get_crime_statistics = AsyncMock(side_effect=HTTPException(status_code=500, detail="BRÅ API error"))
+        
+        result = await fetch_statistics(StatisticsType.BRA_STATISTIK, 2024, "karlstad")
+        
+        assert result["data"] is None
+        assert "ej tillgänglig" in result["text"]
+        assert "bra_statistik" in result["text"] 

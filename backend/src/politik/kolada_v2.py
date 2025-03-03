@@ -174,106 +174,124 @@ class KoladaClient:
             )
             
             if not response.get('values'):
-                raise NoDataError(
-                    f"Ingen data tillgänglig för KPI {kpi_id}, "
-                    f"kommun {municipality_id}, år {year}"
-                )
+                raise NoDataError(f"No data found for KPI {kpi_id}, municipality {municipality_id}, year {year}")
                 
-            # Extrahera värdet
+            # Extrahera värdet och året
             try:
                 data = response['values'][0]
                 if 'values' in data:
                     # New API format
                     value = float(data['values'][0]['value'])
+                    actual_year = int(data['period'])
                 else:
                     # Old API format
                     value = float(data.get('value', 0))
-            except (KeyError, ValueError, IndexError) as e:
-                raise NoDataError(f"Kunde inte tolka värdet från API:et: {str(e)}")
-            
-            # Validera om det behövs
-            if validate and not self._validate_value(value, kpi_id):
-                raise ValidationError(
-                    f"Värdet {value} för KPI {kpi_id} är utanför rimliga gränser"
-                )
+                    actual_year = int(data.get('period', year))
+                    
+                # Validera värdet om validate=True
+                if validate and not self._validate_value(value, kpi_id):
+                    raise ValidationError(f"Value {value} is not valid for KPI {kpi_id}")
+                    
+                return {
+                    "value": value,
+                    "year": actual_year,  # Använd året från API-svaret
+                    "municipality": municipality_id,
+                    "kpi": kpi_id
+                }
                 
-            return {
-                "value": value,
-                "year": year,
-                "municipality": municipality_id,
-                "kpi": kpi_id
-            }
-            
-        except ValidationError:
-            raise  # Låt ValidationError propagera uppåt
-        except (KoladaError, ValueError) as e:
-            logger.error(f"Fel vid datahämtning: {str(e)}")
-            raise NoDataError(str(e))
-            
+            except (KeyError, ValueError, IndexError) as e:
+                raise NoDataError(f"Could not parse value: {str(e)}")
+                
+        except Exception as e:
+            if isinstance(e, (NoDataError, ValidationError)):
+                raise
+            raise KoladaError(f"Error fetching data: {str(e)}")
+        
     def _validate_value(self, value: float, kpi_id: str) -> bool:
         """
-        Validera att ett värde är rimligt för ett givet KPI
+        Validera att ett värde är rimligt för ett specifikt KPI
         
         Args:
             value: Värdet att validera
-            kpi_id: KPI-koden som värdet tillhör
+            kpi_id: KPI-koden att validera mot
             
         Returns:
-            bool: True om värdet är rimligt, False annars
+            bool: True om värdet är giltigt
+            
+        Raises:
+            ValidationError: Om värdet är ogiltigt
         """
-        # Specifik validering för vissa KPI:er först
+        # Validera specifika KPIs
         validations = {
-            "N01900": lambda x: 50000 <= x <= 150000,  # Befolkning (Karlstad)
-            "N07403": lambda x: 0 <= x <= 2000,        # Våldsbrott per 100k inv
-            "N03101": lambda x: -1000 <= x <= 1000,    # Ekonomiskt resultat (mkr)
+            "N01900": lambda x: 50000 <= x <= 150000,  # Befolkning i Karlstad
+            "N07403": lambda x: 0 <= x <= 2000,  # Våldsbrott per 100k invånare
+            "N03101": lambda x: -1000 <= x <= 1000  # Ekonomiskt resultat
         }
         
         if kpi_id in validations:
-            return validations[kpi_id](value)
+            if not validations[kpi_id](value):
+                raise ValidationError(f"Value {value} is not valid for KPI {kpi_id}")
+            return True
             
-        # Grundläggande validering baserat på KPI-typ
-        if kpi_id.startswith('N'):  # Numeriska värden
-            return value >= 0
-        elif kpi_id.startswith('P'):  # Procentvärden
-            return 0 <= value <= 100
-            
-        return True  # Om ingen specifik validering finns
+        # Grundläggande validering för numeriska värden
+        if value is None or value < -100000 or value > 100000:
+            raise ValidationError(f"Value {value} is outside reasonable bounds")
+        return True
         
     def get_municipality_data_with_fallback(
         self,
         kpi_id: str,
         municipality_id: str,
         target_year: int,
-        max_fallback_years: int = 2
+        max_fallback_years: int = 3
     ) -> Dict[str, Any]:
         """
-        Försök hämta data för ett KPI med fallback till tidigare år
+        Hämta data för ett KPI och en kommun med fallback till tidigare år.
+        Om data inte finns för målåret, försök med tidigare år.
         
         Args:
             kpi_id: KPI-koden att hämta data för
-            municipality_id: Kommun-ID
-            target_year: Önskat år
+            municipality_id: Kommun-ID att hämta data för
+            target_year: Målår att hämta data för
             max_fallback_years: Max antal år att gå tillbaka
             
         Returns:
-            Dict[str, Any]: Data för KPI:t med metadata
+            Dict[str, Any]: Dictionary med värdet och metadata
             
         Raises:
-            NoDataError: Om ingen data hittas inom fallback-perioden
+            NoDataError: Om ingen data finns för given kombination
+            ValidationError: Om datan inte klarar validering
         """
-        for year in range(target_year, target_year - max_fallback_years - 1, -1):
-            try:
-                data = self.get_municipality_data(kpi_id, municipality_id, year)
-                if data["value"] is not None:
-                    return data
-            except (NoDataError, ValidationError) as e:
-                logger.error(f"Fel vid datahämtning: {str(e)}")
-                continue
-                
-        raise NoDataError(
-            f"Ingen data tillgänglig för KPI {kpi_id}, "
-            f"kommun {municipality_id}, år {target_year}"
-        )
+        errors = []
+        
+        # Försök först med målåret
+        try:
+            data = self.get_municipality_data(kpi_id, municipality_id, target_year)
+            return data
+        except (NoDataError, KoladaError) as e:
+            errors.append(f"Ingen data för år {target_year}: {str(e)}")
+        
+        # Om målåret inte finns, hämta lista på tillgängliga år
+        available_years = self.get_available_years(kpi_id, municipality_id)
+        if not available_years:
+            raise NoDataError(f"Ingen data tillgänglig för KPI {kpi_id}, kommun {municipality_id}")
+        
+        # Filtrera år inom fallback-perioden
+        valid_years = [y for y in available_years if y >= target_year - max_fallback_years]
+        if not valid_years:
+            error_msg = f"Ingen data tillgänglig för KPI {kpi_id}, kommun {municipality_id} "
+            error_msg += f"mellan åren {target_year-max_fallback_years} och {target_year}. "
+            error_msg += f"Fel: {'; '.join(errors)}"
+            raise NoDataError(error_msg)
+        
+        # Försök med det senaste tillgängliga året
+        latest_year = max(valid_years)
+        try:
+            data = self.get_municipality_data(kpi_id, municipality_id, latest_year)
+            return data  # Detta kommer att innehålla det faktiska året som data hämtades för
+        except (NoDataError, ValidationError) as e:
+            error_msg = f"Kunde inte hämta data för senaste tillgängliga år {latest_year}: {str(e)}"
+            raise NoDataError(error_msg)
         
     def get_available_years(self, kpi_id: str, municipality_id: str) -> List[int]:
         """

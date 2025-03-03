@@ -616,7 +616,7 @@ async def test_extract_percentage_error_handling():
         
         # Test with complex formats that should still extract valid numbers
         assert bra._extract_percentage("minskade med 2,5,6 procent") == -5.6  # Extracts 5.6 and makes it negative
-        assert bra._extract_percentage("ökade med 2..5 procent") == 5.0  # Takes first valid number (5)
+        assert bra._extract_percentage("ökade med 2..5 procent") == 0.0  # Invalid format with '..' should return 0.0
         
         # Test alternative percentage formats with various decrease indicators
         assert bra._extract_percentage("en minskning med 3,5 procent") == -3.5  # Alternative format with "en minskning med"
@@ -632,6 +632,21 @@ async def test_extract_percentage_error_handling():
         assert bra._extract_percentage("lägre med ,,,, procent") == 0.0  # Invalid number with decrease indicator
         assert bra._extract_percentage("mindre än .. procent") == 0.0  # Invalid number with decrease indicator
         assert bra._extract_percentage("ned med procent") == 0.0  # Missing number with decrease indicator
+        
+        # Test direct percentage format with invalid values
+        assert bra._extract_percentage("abc%") == 0.0  # Invalid direct percentage
+        assert bra._extract_percentage("..%") == 0.0  # Invalid direct percentage
+        assert bra._extract_percentage(",%") == 0.0  # Invalid direct percentage
+        
+        # Test multiple comma handling with invalid values
+        assert bra._extract_percentage("minskade med 1,2,a procent") == 0.0  # Invalid last part
+        assert bra._extract_percentage("ökade med a,2,3 procent") == 0.0  # Invalid first part
+        assert bra._extract_percentage("minskade med 1,,3 procent") == 0.0  # Empty middle part
+        
+        # Test regex pattern matching edge cases
+        assert bra._extract_percentage("1.2.3.4%") == 1.2  # Multiple dots in direct format
+        assert bra._extract_percentage("1,2,3,4 procent") == 4.0  # Multiple commas
+        assert bra._extract_percentage("1e6%") == 1000000.0  # Scientific notation
         
     finally:
         await bra.close()
@@ -658,6 +673,66 @@ async def test_get_crime_trends_decreasing():
         
         # Restore original method
         bra._fetch_cached_stats = original_fetch
+        
+    finally:
+        await bra.close()
+
+@pytest.mark.asyncio
+async def test_data_credibility():
+    """Test the credibility of extracted data."""
+    bra = BRAStatistics()
+    try:
+        # Test with known historical data from 2023
+        html_2023 = """
+        <main>
+            <p>Under 2023 anmäldes totalt 1,5 miljoner brott, vilket är en minskning med 2 procent.</p>
+            <h3>Våldsbrott</h3>
+            <p>Under året anmäldes 95 000 våldsbrott</p>
+            <h3>Egendomsbrott</h3>
+            <p>Totalt anmäldes 450 000 egendomsbrott</p>
+            <h3>Narkotikabrott</h3>
+            <p>125 000 narkotikabrott anmäldes</p>
+        </main>
+        """
+        soup = BeautifulSoup(html_2023, 'html.parser')
+        stats_2023 = bra._extract_statistics(soup, 2023)
+        
+        # 1. Kontrollera rimliga proportioner mellan brottskategorier
+        total_by_category = sum(stats_2023["crimes_by_category"].values())
+        assert total_by_category <= stats_2023["total_crimes"], "Summan av kategorier överstiger totalen"
+        
+        # 2. Kontrollera rimliga gränsvärden för olika brottstyper
+        assert 50000 <= stats_2023["crimes_by_category"]["Våldsbrott"] <= 150000, "Orimligt antal våldsbrott"
+        assert 300000 <= stats_2023["crimes_by_category"]["Egendomsbrott"] <= 600000, "Orimligt antal egendomsbrott"
+        
+        # 3. Kontrollera procentuell förändring
+        assert -10.0 <= stats_2023["change_from_previous_year"] <= 10.0, "Orimlig procentuell förändring"
+        
+        # 4. Kontrollera crimes_per_100k
+        population = 10500000  # Ungefärlig befolkning 2023
+        expected_per_100k = round(stats_2023["total_crimes"] * 100000 / population, 1)
+        assert abs(stats_2023["crimes_per_100k"] - expected_per_100k) < 0.1, "Felaktig beräkning av brott per 100k"
+        
+        # 5. Testa datakonsistens över tid
+        html_2024 = """
+        <main>
+            <p>Under 2024 anmäldes totalt 1,48 miljoner brott, vilket är en minskning med 1 procent.</p>
+            <h3>Våldsbrott</h3>
+            <p>94 000 våldsbrott anmäldes</p>
+            <h3>Egendomsbrott</h3>
+            <p>445 000 egendomsbrott anmäldes</p>
+        </main>
+        """
+        soup = BeautifulSoup(html_2024, 'html.parser')
+        stats_2024 = bra._extract_statistics(soup, 2024)
+        
+        # Kontrollera att förändringen mellan åren är rimlig
+        year_over_year_change = (stats_2024["total_crimes"] - stats_2023["total_crimes"]) / stats_2023["total_crimes"] * 100
+        assert abs(year_over_year_change - stats_2024["change_from_previous_year"]) < 0.5, "Inkonsekvent årsförändring"
+        
+        # 6. Kontrollera datakvalitet
+        assert stats_2023["data_quality"] == "final", "Fel datakvalitet för 2023"
+        assert stats_2024["data_quality"] == "preliminary", "Fel datakvalitet för 2024"
         
     finally:
         await bra.close() 

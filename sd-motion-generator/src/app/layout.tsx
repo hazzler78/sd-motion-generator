@@ -39,14 +39,22 @@ const ibiza = localFont({
   variable: '--font-ibiza',
 });
 
+export const metadata = {
+  title: 'SD Motion Generator',
+  description: 'Generera motioner med AI och statistik',
+};
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="sv" className={`${ibiza.variable}`}>
-      <body>{children}</body>
+    <html lang="sv" className={`${ibiza.variable}`} suppressHydrationWarning>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </head>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 } 
